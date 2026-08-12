@@ -1,10 +1,10 @@
 # Compliance Connector Framework — proof of concept
 
-[![CI](https://github.com/phlppgdfry/pionira-compliance-connector-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/phlppgdfry/pionira-compliance-connector-poc/actions/workflows/ci.yml)
+[![CI](https://github.com/phlppgdfry/compliance-connector-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/phlppgdfry/compliance-connector-poc/actions/workflows/ci.yml)
 
 A small, runnable .NET solution proving out the architecture proposed in the
-[Compliance Connector Framework pitch](https://phlppgdfry.github.io/pionira-compliance-pitch/),
-written for Pionira's Senior Software Engineer .NET vacancy.
+[Compliance Connector Framework pitch](https://phlppgdfry.github.io/compliance-pitch/),
+written for a Senior Software Engineer .NET application.
 
 ## The idea
 

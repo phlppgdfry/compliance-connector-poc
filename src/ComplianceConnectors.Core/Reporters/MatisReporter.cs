@@ -2,7 +2,7 @@ namespace ComplianceConnectors.Core.Reporters;
 
 /// <summary>
 /// OVAM/MATIS — Flemish waste-transport reporting. Unlike DIWASS/DeCA, this regime is not a
-/// live API today: eWastra generates a CSV export that a person submits to OVAM by hand. The
+/// live API today: the source system generates a CSV export that a person submits to OVAM by hand. The
 /// contract doesn't care — ReportAsync here stands in for "prepare and stage the export file"
 /// rather than "call a government endpoint". Same interface, different delivery mechanism.
 /// </summary>
