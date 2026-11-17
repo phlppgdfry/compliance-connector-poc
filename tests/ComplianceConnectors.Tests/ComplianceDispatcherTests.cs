@@ -93,3 +93,53 @@ public class ComplianceDispatcherTests
         }
     }
 }
+
+public class DispatcherObservabilityTests
+{
+    private static SignedDocument Doc() => new("DOC-9", DocumentType.AnnexVii, "BE", "NL", true, DateTimeOffset.UtcNow);
+
+    [Fact]
+    public async Task Reports_every_attempt_including_failures()
+    {
+        var events = new System.Collections.Concurrent.ConcurrentQueue<AttemptEvent>();
+        var outage = new ComplianceConnectors.Core.Simulation.FaultInjectingReporter(new ComplianceConnectors.Core.Reporters.MatisReporter()) { IsDown = true };
+        var dispatcher = new ComplianceDispatcher([outage], maxRetries: 2, retryDelay: TimeSpan.FromMilliseconds(1), onAttempt: events.Enqueue);
+
+        var outcome = Assert.Single(await dispatcher.DispatchAsync(Doc()));
+
+        Assert.Equal(ReportStatus.DeadLettered, outcome.Status);
+        Assert.Equal([true, true, false], events.Select(e => e.WillRetry).ToArray());
+        Assert.All(events, e => Assert.False(e.Succeeded));
+    }
+
+    [Fact]
+    public async Task An_outage_in_one_regime_leaves_the_others_delivered()
+    {
+        var matis = new ComplianceConnectors.Core.Simulation.FaultInjectingReporter(new ComplianceConnectors.Core.Reporters.MatisReporter());
+        var diwass = new ComplianceConnectors.Core.Simulation.FaultInjectingReporter(new ComplianceConnectors.Core.Reporters.DiwassReporter(seed: 1)) { IsDown = true };
+        var dispatcher = new ComplianceDispatcher([matis, diwass], maxRetries: 1, retryDelay: TimeSpan.FromMilliseconds(1));
+
+        var outcomes = await dispatcher.DispatchAsync(Doc());
+
+        Assert.Equal(ReportStatus.Delivered, outcomes.Single(o => o.RegimeCode == "BE-MATIS").Status);
+        Assert.Equal(ReportStatus.DeadLettered, outcomes.Single(o => o.RegimeCode == "EU-DIWASS").Status);
+    }
+
+    [Fact]
+    public async Task Redelivery_targets_only_the_dead_lettered_regime()
+    {
+        var matis = new ComplianceConnectors.Core.Simulation.FaultInjectingReporter(new ComplianceConnectors.Core.Reporters.MatisReporter());
+        var diwass = new ComplianceConnectors.Core.Simulation.FaultInjectingReporter(new ComplianceConnectors.Core.Reporters.DiwassReporter(seed: 1)) { IsDown = true };
+        var events = new System.Collections.Concurrent.ConcurrentQueue<AttemptEvent>();
+        var dispatcher = new ComplianceDispatcher([matis, diwass], maxRetries: 1, retryDelay: TimeSpan.FromMilliseconds(1), onAttempt: events.Enqueue);
+        await dispatcher.DispatchAsync(Doc());
+        events.Clear();
+
+        diwass.IsDown = false;
+        var outcome = await dispatcher.RedeliverAsync(Doc(), "EU-DIWASS");
+
+        Assert.Equal("EU-DIWASS", outcome.RegimeCode);
+        Assert.All(events, e => Assert.Equal("EU-DIWASS", e.RegimeCode));
+        await Assert.ThrowsAsync<ArgumentException>(() => dispatcher.RedeliverAsync(Doc(), "XX-NOPE"));
+    }
+}

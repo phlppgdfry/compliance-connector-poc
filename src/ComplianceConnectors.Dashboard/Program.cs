@@ -7,7 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddSingleton<DispatchHistoryService>();
+// Scoped = one instance per browser session: visitors never see each other's documents.
+builder.Services.AddScoped<DispatchHistoryService>();
 
 var app = builder.Build();
 

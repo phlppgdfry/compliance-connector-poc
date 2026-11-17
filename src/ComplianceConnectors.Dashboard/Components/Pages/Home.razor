@@ -2,182 +2,212 @@
 @rendermode InteractiveServer
 @using ComplianceConnectors.Core
 @using ComplianceConnectors.Dashboard.Services
-@inject DispatchHistoryService HistoryService
+@inject DispatchHistoryService Lab
 @implements IDisposable
 
-<PageTitle>Compliance Connector Dashboard</PageTitle>
+<PageTitle>Compliance Connector — live fan-out</PageTitle>
 
 <div class="page">
-    <header>
-        <p class="eyebrow">Compliance Connector Framework — Blazor</p>
-        <h1>Eén document, meerdere onafhankelijke meldingen</h1>
+    <header class="hero">
+        <p class="eyebrow">Compliance Connector Framework · .NET 10 · Blazor</p>
+        <h1>Eén ondertekend document. Drie meldingen. <span>Nul afhankelijkheden.</span></h1>
         <p class="lede">
-            Onderteken een document — via een voorbeeld of het formulier — en volg live hoe de
-            dispatcher het doorstuurt naar elk toepasselijk regime (BE-MATIS, EU-DIWASS, ES-DECA),
-            elk met een eigen retry-beleid. EU-DIWASS is bewust gesimuleerd als onstabiel bij de
-            eerste paar aanroepen, om de retry- en dead-letter-flow zichtbaar te maken.
+            Onderteken een transportdocument en kijk hoe de dispatcher het naar elk toepasselijk regime
+            stuurt, elk met een eigen retry-beleid. Zet een regime in storing: de andere leveren gewoon,
+            het gestoorde gaat naar de dead-letter queue en kan later opnieuw aangeboden worden.
         </p>
     </header>
 
-    @if (HistoryService.Summaries.Count > 0)
+    <section class="card composer" aria-labelledby="sign">
+        <h2 id="sign"><span class="step">1</span> Onderteken een document</h2>
+        <div class="presets">
+            @foreach (var p in Presets)
+            {
+                <button class="preset" @onclick="() => Sign(p.Origin, p.Destination, p.Waste)" disabled="@Lab.IsBusy">
+                    <span class="route">@p.Origin → @p.Destination</span>
+                    <span class="tag">@p.Label</span>
+                </button>
+            }
+        </div>
+        <div class="custom-form">
+            <label><span>Herkomst</span>
+                <select @bind="_origin">@foreach (var c in Countries) { <option value="@c">@c</option> }</select>
+            </label>
+            <label><span>Bestemming</span>
+                <select @bind="_destination">@foreach (var c in Countries) { <option value="@c">@c</option> }</select>
+            </label>
+            <label class="checkbox-label"><input type="checkbox" @bind="_waste" /> <span>Bevat afval (Annex VII)</span></label>
+            <button class="submit" @onclick="() => Sign(_origin, _destination, _waste)" disabled="@Lab.IsBusy">Onderteken en verstuur</button>
+        </div>
+    </section>
+
+    <section class="card fanout" aria-labelledby="live" aria-live="polite">
+        <div class="section-head">
+            <h2 id="live"><span class="step">2</span> Fan-out, live</h2>
+            <span class="hint">Retry na 0,5 s · 1 s · 2 s, daarna dead-letter</span>
+        </div>
+        <div class="flow">
+            <div class="doc-card @(Lab.Current is null ? "idle" : "")">
+                @if (Lab.Current is { } doc)
+                {
+                    <span class="doc-id">@doc.DocumentId</span>
+                    <span class="doc-route">@doc.OriginCountry → @doc.DestinationCountry</span>
+                    <span class="doc-meta">@(doc.ContainsWaste ? "afval" : "geen afval") · ondertekend @doc.SignedAtUtc.ToLocalTime().ToString("HH:mm:ss")</span>
+                    <span class="doc-ok">✓ transport loopt door</span>
+                }
+                else
+                {
+                    <span class="doc-meta">Nog geen document. Kies hierboven een voorbeeld.</span>
+                }
+            </div>
+            <div class="bus" aria-hidden="true"><span>document.signed</span></div>
+            <div class="lanes">
+                @foreach (var lane in Lab.Lanes)
+                {
+                    var down = Lab.IsDown(lane.RegimeCode);
+                    <div class="lane @LaneClass(lane)">
+                        <div class="lane-head">
+                            <div>
+                                <strong>@lane.RegimeCode</strong>
+                                <small>@lane.Mechanism</small>
+                            </div>
+                            <label class="switch" title="Simuleer dat dit regime onbereikbaar is">
+                                <input type="checkbox" checked="@down" @onchange="e => Lab.SetDown(lane.RegimeCode, (bool)e.Value!)" />
+                                <span class="track"><span class="thumb"></span></span>
+                                <span class="switch-label">@(down ? "In storing" : "Online")</span>
+                            </label>
+                        </div>
+                        <div class="attempts">
+                            @if (Lab.Current is not null && !lane.Active)
+                            {
+                                <span class="na">@(Lab.IsReplay ? "Niet opnieuw verstuurd: dit regime heeft de melding al" : "Niet van toepassing op dit document")</span>
+                            }
+                            @foreach (var a in lane.Attempts)
+                            {
+                                <span class="attempt @(a.Succeeded ? "ok" : "fail")" title="@a.Error">
+                                    #@a.Attempt @(a.Succeeded ? "✓" : "✗")
+                                    @if (!a.Succeeded) { <em>@ShortError(a.Error)</em> }
+                                </span>
+                            }
+                            @if (lane.Active && lane.Settled is null)
+                            {
+                                <span class="attempt pending">bezig…</span>
+                            }
+                        </div>
+                        <span class="lane-status">@LaneStatus(lane)</span>
+                    </div>
+                }
+            </div>
+        </div>
+    </section>
+
+    @if (Lab.Summaries.Count > 0)
     {
-        <section class="summary">
-            @foreach (var summary in HistoryService.Summaries)
+        <section class="summary" aria-label="Totalen deze sessie">
+            @foreach (var s in Lab.Summaries)
             {
                 <div class="summary-card">
-                    <span class="summary-regime">@summary.RegimeCode</span>
-                    <div class="summary-numbers">
-                        <span class="summary-num delivered">@summary.Delivered</span>
-                        <span class="summary-label">geleverd</span>
-                    </div>
-                    @if (summary.DeadLettered > 0)
-                    {
-                        <div class="summary-numbers">
-                            <span class="summary-num deadlettered">@summary.DeadLettered</span>
-                            <span class="summary-label">dead-lettered</span>
-                        </div>
-                    }
-                    <span class="summary-attempts">@summary.TotalAttempts pogingen totaal</span>
+                    <span class="summary-regime">@s.RegimeCode</span>
+                    <span><b class="delivered">@s.Delivered</b> geleverd</span>
+                    <span><b class="deadlettered">@s.DeadLettered</b> dead-lettered</span>
+                    <small>@s.TotalAttempts pogingen</small>
                 </div>
             }
         </section>
     }
 
-    <section class="composer">
-        <h2>Document ondertekenen — voorbeelden</h2>
-        <div class="presets">
-            <button class="preset" @onclick='() => Sign("BE", "NL", true)' disabled="@_dispatching">
-                <span class="route">BE → NL</span><span class="tag">afval</span>
-            </button>
-            <button class="preset" @onclick='() => Sign("BE", "ES", false)' disabled="@_dispatching">
-                <span class="route">BE → ES</span><span class="tag">geen afval</span>
-            </button>
-            <button class="preset" @onclick='() => Sign("ES", "FR", true)' disabled="@_dispatching">
-                <span class="route">ES → FR</span><span class="tag">afval</span>
-            </button>
-            <button class="preset" @onclick='() => Sign("BE", "BE", true)' disabled="@_dispatching">
-                <span class="route">BE → BE</span><span class="tag">afval, binnenlands</span>
-            </button>
+    <section class="card dlq" aria-labelledby="dlq">
+        <div class="section-head">
+            <h2 id="dlq"><span class="step">3</span> Dead-letter queue (@Lab.DeadLetters.Count)</h2>
+            @if (Lab.DeadLetters.Count > 0) { <span class="hint">Zet de storing uit en bied opnieuw aan. Alleen dat regime krijgt de melding opnieuw.</span> }
         </div>
-
-        <h2 class="form-heading">Of stel je eigen document samen</h2>
-        <div class="custom-form">
-            <label>
-                <span>Herkomst</span>
-                <select @bind="_customOrigin">
-                    @foreach (var c in Countries)
-                    {
-                        <option value="@c">@c</option>
-                    }
-                </select>
-            </label>
-            <label>
-                <span>Bestemming</span>
-                <select @bind="_customDestination">
-                    @foreach (var c in Countries)
-                    {
-                        <option value="@c">@c</option>
-                    }
-                </select>
-            </label>
-            <label class="checkbox-label">
-                <input type="checkbox" @bind="_customWaste" />
-                <span>Bevat afval (Annex VII)</span>
-            </label>
-            <button class="submit" @onclick="SignCustom" disabled="@_dispatching">Onderteken en verstuur</button>
-        </div>
-
-        @if (_dispatching)
+        @if (Lab.DeadLetters.Count == 0)
         {
-            <p class="status-line">Bezig met dispatchen…</p>
+            <p class="empty">Leeg. Zet een regime in storing en onderteken een document om hier iets te zien.</p>
+        }
+        @foreach (var letter in Lab.DeadLetters)
+        {
+            <div class="dlq-row">
+                <span class="doc-id">@letter.Document.DocumentId</span>
+                <span class="regime">@letter.RegimeCode</span>
+                <span class="error">@letter.Error</span>
+                <span class="muted">@letter.Attempts pogingen</span>
+                <button class="replay" @onclick="() => Lab.RedeliverAsync(letter)" disabled="@Lab.IsBusy">Opnieuw aanbieden</button>
+            </div>
         }
     </section>
 
     <section class="history">
-        <div class="history-head">
-            <h2>Geschiedenis (@HistoryService.History.Count)</h2>
-            @if (HistoryService.History.Count > 0)
-            {
-                <button class="clear" @onclick="Clear">Wis geschiedenis</button>
-            }
+        <div class="section-head">
+            <h2>Geschiedenis (@Lab.History.Count)</h2>
+            @if (Lab.History.Count > 0) { <button class="clear" @onclick="Lab.Clear">Alles wissen</button> }
         </div>
-        @if (HistoryService.History.Count == 0)
+        @foreach (var record in Lab.History)
         {
-            <p class="empty">Nog geen document ondertekend. Klik hierboven op een voorbeeld of vul het formulier in.</p>
-        }
-        else
-        {
-            @foreach (var record in HistoryService.History)
-            {
-                <div class="record">
-                    <div class="record-head">
-                        <span class="doc-id">@record.Document.DocumentId</span>
-                        <span class="route-small">@record.Document.OriginCountry → @record.Document.DestinationCountry</span>
-                        @if (record.Document.ContainsWaste)
-                        {
-                            <span class="waste-badge">afval</span>
-                        }
-                        <span class="time">@record.DispatchedAtUtc.ToLocalTime().ToString("HH:mm:ss")</span>
-                    </div>
-                    <div class="outcomes">
-                        @foreach (var outcome in record.Outcomes)
-                        {
-                            <span class="outcome @StatusClass(outcome.Status)">
-                                <strong>@outcome.RegimeCode</strong>
-                                <span class="outcome-status">@StatusLabel(outcome.Status)</span>
-                                @if (outcome.Status != ReportStatus.NotApplicable)
-                                {
-                                    <span class="attempts">@outcome.Attempts poging@(outcome.Attempts == 1 ? "" : "en")</span>
-                                }
-                            </span>
-                        }
-                    </div>
-                </div>
-            }
+            <div class="record">
+                <span class="doc-id">@record.Document.DocumentId</span>
+                <span class="route-small">@record.Document.OriginCountry → @record.Document.DestinationCountry</span>
+                @if (record.Document.ContainsWaste) { <span class="waste-badge">afval</span> }
+                <span class="outcomes">
+                    @foreach (var o in record.Outcomes)
+                    {
+                        <span class="outcome @StatusClass(o.Status)"><strong>@o.RegimeCode</strong> @StatusLabel(o.Status)@(o.Status == ReportStatus.NotApplicable ? "" : $" · {o.Attempts}×")</span>
+                    }
+                </span>
+                <span class="time">@record.DispatchedAtUtc.ToLocalTime().ToString("HH:mm:ss")</span>
+            </div>
         }
     </section>
 
     <footer class="page-footer">
-        Portfolioproject bij het <a href="https://phlppgdfry.github.io/compliance-pitch/" target="_blank" rel="noopener">Compliance Connector Framework-voorstel</a>.
+        Proof of concept bij het <a href="https://phlppgdfry.github.io/compliance-pitch/" target="_blank" rel="noopener">Compliance Connector Framework-voorstel</a>.
+        Gesimuleerde regimes, geen echte overheids-API's.
         Broncode: <a href="https://github.com/phlppgdfry/compliance-connector-poc" target="_blank" rel="noopener">github.com/phlppgdfry/compliance-connector-poc</a>
     </footer>
 </div>
 
 @code {
     private static readonly string[] Countries = ["BE", "NL", "ES", "FR", "DE"];
+    private static readonly (string Origin, string Destination, bool Waste, string Label)[] Presets =
+    [
+        ("BE", "NL", true, "afval · MATIS + DIWASS"),
+        ("BE", "ES", false, "geen afval · DeCA"),
+        ("ES", "FR", true, "afval · DIWASS + DeCA"),
+        ("BE", "BE", true, "afval, binnenlands · MATIS"),
+    ];
 
-    private bool _dispatching;
-    private int _counter;
-    private string _customOrigin = "BE";
-    private string _customDestination = "NL";
-    private bool _customWaste = true;
+    private string _origin = "BE";
+    private string _destination = "ES";
+    private bool _waste = true;
 
-    protected override void OnInitialized()
+    // The service raises OnChange from background threads (parallel reporters, Polly retries).
+    // InvokeAsync marshals back to the renderer; calling StateHasChanged directly would throw.
+    private void Refresh() => _ = InvokeAsync(StateHasChanged);
+
+    protected override void OnInitialized() => Lab.OnChange += Refresh;
+
+    private Task Sign(string origin, string destination, bool waste) => Lab.DispatchAsync(origin, destination, waste);
+
+    private static string ShortError(string? error) =>
+        error is null ? "" : error.Contains("503") ? "503" : error.Length > 18 ? error[..18] + "…" : error;
+
+    private string LaneClass(Lane lane) =>
+        Lab.IsDown(lane.RegimeCode) && lane.Final is null && !lane.Active ? "down" :
+        lane.Settled switch
+        {
+            ReportStatus.Delivered => "delivered",
+            ReportStatus.DeadLettered => "deadlettered",
+            ReportStatus.NotApplicable => "na",
+            _ => lane.Active ? "running" : ""
+        } + (Lab.IsDown(lane.RegimeCode) ? " down" : "");
+
+    private string LaneStatus(Lane lane) => lane.Settled switch
     {
-        HistoryService.OnChange += StateHasChanged;
-    }
-
-    private Task Sign(string origin, string destination, bool waste) => DispatchAsync(origin, destination, waste);
-
-    private Task SignCustom() => DispatchAsync(_customOrigin, _customDestination, _customWaste);
-
-    private async Task DispatchAsync(string origin, string destination, bool waste)
-    {
-        _dispatching = true;
-        _counter++;
-        var document = new SignedDocument(
-            $"DOC-{_counter:000}",
-            DocumentType.AnnexVii,
-            origin,
-            destination,
-            waste,
-            DateTimeOffset.UtcNow);
-
-        await HistoryService.DispatchAsync(document);
-        _dispatching = false;
-    }
-
-    private void Clear() => HistoryService.Clear();
+        ReportStatus.Delivered => "Geleverd",
+        ReportStatus.DeadLettered => "Dead-lettered — document blijft geldig",
+        ReportStatus.NotApplicable => "N.v.t.",
+        _ => lane.Active ? "Bezig" : Lab.Current is null ? "Wacht op document" : Lab.IsReplay ? "—" : "N.v.t."
+    };
 
     private static string StatusClass(ReportStatus status) => status switch
     {
@@ -188,13 +218,10 @@
 
     private static string StatusLabel(ReportStatus status) => status switch
     {
-        ReportStatus.Delivered => "Geleverd",
-        ReportStatus.DeadLettered => "Dead-lettered",
-        _ => "N.v.t."
+        ReportStatus.Delivered => "geleverd",
+        ReportStatus.DeadLettered => "dead-lettered",
+        _ => "n.v.t."
     };
 
-    public void Dispose()
-    {
-        HistoryService.OnChange -= StateHasChanged;
-    }
+    public void Dispose() => Lab.OnChange -= Refresh;
 }
